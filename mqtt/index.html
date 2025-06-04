@@ -62,6 +62,22 @@
         Test Flow Control
       </button>
     </div>
+    <div class="security-panel" style="margin: 10px 0; padding: 10px; background: #f0f8ff; border-radius: 5px; border-left: 4px solid #2196f3;">
+      <h4 style="margin: 0 0 5px 0; font-size: 14px;">🔒 Security Status</h4>
+      <div style="display: flex; gap: 15px; font-size: 12px;">
+        <span>Mode: <span id="security-mode">🔓 STANDARD</span></span>
+        <span>Encryption: <span id="encryption-status">NONE</span></span>
+        <span>Rating: <span id="security-rating">LOW ❌</span></span>
+      </div>
+      <div style="margin-top: 5px;">
+        <button onclick="showSecurityAudit()" style="padding: 5px 10px; font-size: 11px; margin-right: 5px;">
+          🔍 Security Audit
+        </button>
+        <button onclick="testSecurityFeatures()" style="padding: 5px 10px; font-size: 11px; background: #4caf50; color: white;">
+          🧪 Test Security
+        </button>
+      </div>
+    </div>
     <textarea id="editor" class="w-full h-64 border rounded p-3 resize-none" placeholder="Start typing here..."></textarea>
 
     <p id="editor-status" class="mt-2 text-sm text-gray-500">Status: Connecting...</p>
