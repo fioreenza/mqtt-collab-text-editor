@@ -28,6 +28,13 @@ const modalMessage = document.getElementById("modal-message");
 let btnApprove = document.getElementById("btn-approve");
 let btnDeny = document.getElementById("btn-deny");
 
+const MESSAGE_EXPIRY_SETTINGS = {
+  DOCUMENT_UPDATE: 5,    // 1 jam - untuk update dokumen
+  EDIT_REQUEST: 60,         // 1 menit - untuk request edit access
+  STATUS_MESSAGE: 300,      // 5 menit - untuk status messages
+  CHAT_MESSAGE: 1800,       // 30 menit - untuk chat (jika ada)
+  LAST_WILL: 300           // 5 menit - untuk Last Will (sudah ada)
+};
 
 function genUUID() {
   return Math.random().toString(16).slice(2, 10);
@@ -328,6 +335,7 @@ function showModal(requester, callback) {
   btnDeny.addEventListener("click", () => { cleanup(); callback(false); }, { once: true });
 }
 
+// Update document.getElementById("btn-create").onclick - ganti bagian publish document
 document.getElementById("btn-create").onclick = async () => {
   try {
     await connectAndSetupClient();
@@ -347,26 +355,40 @@ document.getElementById("btn-create").onclick = async () => {
 
   subscribeAllTopics(currentFileId);
 
-  // Publikasikan pesan inisialisasi dokumen dengan QoS 2 dan RETAIN
-  client.publish(`file/${currentFileId}/document/init`, currentDocumentContent, {
-    qos: 2, // <<<< QoS 2 untuk dokumen
-    retain: true,
-  }, (err) => {
-    if(err) console.error("Publish retain init (QoS 2) error:", err);
-    else console.log(`Published initial document to file/${currentFileId}/document/init with QoS 2, retain=true.`);
-  });
+  // GANTI BAGIAN INI - pakai publishDocumentUpdate dengan expiry
+  try {
+    await publishDocumentUpdate(currentFileId, currentDocumentContent);
+    console.log("✅ Initial document published with expiry");
+  } catch (err) {
+    console.error("❌ Failed to publish initial document:", err);
+  }
 
-  editor.oninput = () => {
+  // TAMBAHKAN - Publish status message bahwa user joined
+  try {
+    await publishStatusMessage(
+      `file/${currentFileId}/status`,
+      {
+        user: userCredentials.username,
+        clientId: clientId,
+        action: "joined",
+        timestamp: new Date().toISOString(),
+        message: `${userCredentials.username} created and joined the document`
+      }
+    );
+    console.log("✅ Join status published with expiry");
+  } catch (err) {
+    console.error("❌ Failed to publish join status:", err);
+  }
+
+  editor.oninput = async () => {
     if (!hasEditAccess || !client || !client.connected) return;
     currentDocumentContent = editor.value;
-    // Perubahan dokumen juga dengan QoS 2
-    client.publish(`file/${currentFileId}/document/init`, currentDocumentContent, {
-        qos: 2, // <<<< QoS 2 untuk update dokumen
-        retain: true
-    }, (err) => {
-        if(err) console.error(`Publish document update (QoS 2) for ${currentFileId} error:`, err);
-        // else console.log(`Published document update (QoS 2) for ${currentFileId}`); // Bisa terlalu verbose
-    });
+    
+    try {
+      await publishDocumentUpdate(currentFileId, currentDocumentContent);
+    } catch (err) {
+      console.error("❌ Document update failed:", err);
+    }
   };
 };
 
@@ -399,16 +421,31 @@ document.getElementById("btn-join").onclick = async () => {
       fileIdLabel.textContent = `File ID: ${currentFileId}`;
       editorStatus.textContent = "Status: Edit access granted. Document should load.";
 
-      editor.oninput = () => {
+      // Publish join status dengan expiry
+      try {
+        await publishStatusMessage(
+          `file/${currentFileId}/status`,
+          {
+            user: userCredentials.username,
+            clientId: clientId,
+            action: "joined",
+            timestamp: new Date().toISOString(),
+            message: `${userCredentials.username} joined the document`
+          }
+        );
+      } catch (err) {
+        console.error("❌ Failed to publish join status:", err);
+      }
+
+      editor.oninput = async () => {
         if (!hasEditAccess || !client || !client.connected) return;
         currentDocumentContent = editor.value;
-        // Update dokumen oleh pengguna yang join juga QoS 2
-        client.publish(`file/${currentFileId}/document/init`, currentDocumentContent, {
-            qos: 2, // <<<< QoS 2 untuk update dokumen
-            retain: true
-        }, (err) => {
-            if(err) console.error(`Publish document update (QoS 2) for ${currentFileId} error:`, err);
-        });
+        
+        try {
+          await publishDocumentUpdate(currentFileId, currentDocumentContent);
+        } catch (err) {
+          console.error("❌ Document update failed:", err);
+        }
       };
     } else if (allowed === "timeout") {
       joinMessage.textContent = "Edit access request timed out.";
@@ -434,16 +471,27 @@ function cleanupAfterFailedJoin() {
     currentFileId = null;
 }
 
-document.getElementById("btn-leave").onclick = () => {
+document.getElementById("btn-leave").onclick = async () => {
   if (client && client.connected && currentFileId) {
     unsubscribeAllTopics(currentFileId);
-    // Contoh pesan 'user left' dengan QoS 0 (fire and forget)
-    // Ini opsional dan hanya contoh penggunaan QoS 0
-    const leaveMessage = JSON.stringify({ user: userCredentials.username, action: "left" });
-    client.publish(`file/${currentFileId}/status`, leaveMessage, { qos: 0 }, (err) => {
-        if(err) console.warn("Publish leave status (QoS 0) error:", err);
-        else console.log(`Published leave status (QoS 0) for ${currentFileId}`);
-    });
+    
+    // Publish leave message dengan expiry
+    try {
+      await publishStatusMessage(
+        `file/${currentFileId}/status`,
+        {
+          user: userCredentials.username,
+          clientId: clientId,
+          action: "left",
+          timestamp: new Date().toISOString(),
+          message: `${userCredentials.username} left the document`
+        },
+        0 // QoS 0 untuk leave message (fire and forget)
+      );
+      console.log("✅ Leave status published with expiry");
+    } catch (err) {
+      console.warn("⚠️ Failed to publish leave status:", err);
+    }
   }
 
   currentFileId = null;
@@ -499,6 +547,7 @@ function unsubscribeAllTopics(fileId) {
   });
 }
 
+// Update function requestEditAccess
 function requestEditAccess(fileId, requestingUsername) {
   return new Promise((resolve, reject) => {
     if (!client || !client.connected) {
@@ -520,28 +569,29 @@ function requestEditAccess(fileId, requestingUsername) {
 
     pendingRequests.set(correlationId, { resolve, reject, timeoutId });
 
-    // Permintaan akses edit dengan QoS 1
-    client.publish(
+    // Request dengan message expiry
+    publishWithExpiry(
       requestTopic,
-      JSON.stringify({ username: requestingUsername }),
+      JSON.stringify({ 
+        username: requestingUsername,
+        timestamp: new Date().toISOString()
+      }),
       {
-        qos: 1, // <<<< QoS 1 untuk permintaan akses
+        qos: 1,
         properties: {
           responseTopic: responseTopicForThisClient,
           correlationData: new TextEncoder().encode(correlationId),
         },
       },
-      (err) => {
-          if (err) {
-              clearTimeout(timeoutId);
-              pendingRequests.delete(correlationId);
-              console.error("Failed to publish edit request (QoS 1):", err);
-              reject(new Error(`Publish request failed: ${err.message}`));
-          } else {
-              console.log("Edit access request (QoS 1) published.");
-          }
-      }
-    );
+      MESSAGE_EXPIRY_SETTINGS.EDIT_REQUEST
+    ).then(() => {
+      console.log("✅ Edit access request published with expiry");
+    }).catch((err) => {
+      clearTimeout(timeoutId);
+      pendingRequests.delete(correlationId);
+      console.error("❌ Failed to publish edit request:", err);
+      reject(new Error(`Publish request failed: ${err.message}`));
+    });
   });
 }
 
@@ -549,3 +599,51 @@ document.addEventListener('DOMContentLoaded', () => {
     updateLoginUI();
     editorStatus.textContent = "Status: Ready. Enter credentials and Create/Join.";
 });
+
+function publishWithExpiry(topic, message, options = {}, expirySeconds = null) {
+  const defaultExpiry = MESSAGE_EXPIRY_SETTINGS.STATUS_MESSAGE;
+  const actualExpiry = expirySeconds || defaultExpiry;
+  
+  const publishOptions = {
+    ...options,
+    properties: {
+      ...options.properties,
+      messageExpiryInterval: actualExpiry // Message expires in seconds
+    }
+  };
+  
+  return new Promise((resolve, reject) => {
+    client.publish(topic, message, publishOptions, (err) => {
+      if (err) {
+        console.error(`Publish to ${topic} with expiry ${actualExpiry}s failed:`, err);
+        reject(err);
+      } else {
+        console.log(`✅ Published to ${topic} with ${actualExpiry}s expiry (QoS ${publishOptions.qos || 0})`);
+        resolve();
+      }
+    });
+  });
+}
+
+function publishDocumentUpdate(fileId, content) {
+  return publishWithExpiry(
+    `file/${fileId}/document/init`, 
+    content, 
+    {
+      qos: 2,
+      retain: true
+    },
+    MESSAGE_EXPIRY_SETTINGS.DOCUMENT_UPDATE
+  );
+}
+
+// Update function untuk status messages dengan expiry
+function publishStatusMessage(topic, statusData, qos = 1) {
+  const message = typeof statusData === 'string' ? statusData : JSON.stringify(statusData);
+  return publishWithExpiry(
+    topic,
+    message,
+    { qos: qos },
+    MESSAGE_EXPIRY_SETTINGS.STATUS_MESSAGE
+  );
+}
