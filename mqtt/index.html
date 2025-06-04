@@ -18,6 +18,15 @@
       <input type="text" id="username" class="w-full border rounded p-2 mb-2" placeholder="Enter your username" />
       <label class="block mb-2 font-semibold">Password:</label>
       <input type="password" id="password" class="w-full border rounded p-2 mb-4" placeholder="Enter your password" />
+      <div class="form-group">
+        <label>
+          <input type="checkbox" id="secure-connection-toggle" onchange="toggleSecureConnection()">
+          🔒 Use Secure Connection (SSL/TLS)
+        </label>
+        <small style="display: block; color: #666; margin-top: 5px;">
+          Enable SSL/TLS encryption for secure communication
+        </small>
+      </div>
     </div>
 
     <!-- Bagian untuk menampilkan info user yang sudah login -->
@@ -42,7 +51,17 @@
       <h2 id="file-id-label" class="text-xl font-semibold"></h2>
       <button id="btn-leave" class="bg-red-600 hover:bg-red-700 text-white py-1 px-3 rounded">Leave File</button>
     </div>
-
+    <div class="flow-control-panel" style="margin: 10px 0; padding: 10px; background: #f5f5f5; border-radius: 5px;">
+      <h4 style="margin: 0 0 5px 0; font-size: 14px;">Flow Control Status</h4>
+      <div style="display: flex; gap: 15px; font-size: 12px;">
+        <span>Status: <span id="flow-control-status">🟢 NORMAL</span></span>
+        <span>Queue: <span id="queue-length">0</span>/<span id="max-queue">50</span></span>
+        <span>Active: <span id="active-publishes">0</span>/<span id="max-active">5</span></span>
+      </div>
+      <button onclick="testFlowControl()" style="margin-top: 5px; padding: 5px 10px; font-size: 11px;">
+        Test Flow Control
+      </button>
+    </div>
     <textarea id="editor" class="w-full h-64 border rounded p-3 resize-none" placeholder="Start typing here..."></textarea>
 
     <p id="editor-status" class="mt-2 text-sm text-gray-500">Status: Connecting...</p>

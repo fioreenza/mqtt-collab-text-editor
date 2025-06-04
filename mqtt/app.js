@@ -1,4 +1,6 @@
 const brokerUrl = "ws://localhost:9002"; // Menggunakan WS non-secure untuk sekarang
+const secureBrokerUrl = "wss://localhost:9003"; // Secure WebSocket
+let useSecureConnection = false; // Toggle untuk secure connection
 const clientId = "client_" + Math.random().toString(16).slice(2, 8);
 
 let client;
@@ -35,6 +37,19 @@ const MESSAGE_EXPIRY_SETTINGS = {
   CHAT_MESSAGE: 1800,       // 30 menit - untuk chat (jika ada)
   LAST_WILL: 300           // 5 menit - untuk Last Will (sudah ada)
 };
+
+const FLOW_CONTROL_SETTINGS = {
+  MAX_CONCURRENT_PUBLISHES: 5,    // Maksimum 5 publish bersamaan
+  MAX_QUEUE_SIZE: 50,              // Maksimum 50 message dalam queue
+  PUBLISH_RATE_LIMIT: 100,         // Maksimum 100ms delay antar publish
+  BACKPRESSURE_THRESHOLD: 10       // Trigger backpressure jika queue > 10
+};
+
+let messageQueue = [];
+let activePublishes = 0;
+let isBackpressureActive = false;
+let lastPublishTime = 0;
+let publishRateCounter = 0;
 
 function genUUID() {
   return Math.random().toString(16).slice(2, 10);
@@ -98,17 +113,22 @@ function connectAndSetupClient() {
       connectPassword = userCredentials.password;
     }
 
-    editorStatus.textContent = "Status: Connecting to broker...";
-    console.log(`Attempting to connect to ${brokerUrl} as ${connectUsername}`);
+    // Use secure or standard URL based on toggle
+    const currentBrokerUrl = useSecureConnection ? secureBrokerUrl : brokerUrl;
+    const connectionType = useSecureConnection ? 'Secure (WSS)' : 'Standard (WS)';
+    
+    editorStatus.textContent = `Status: Connecting to ${connectionType} broker...`;
+    console.log(`Attempting to connect to ${currentBrokerUrl} as ${connectUsername} using ${connectionType}`);
 
-    // Last Will Message - akan dipublish otomatis jika client disconnect tidak normal
+    // Last Will Message
     const lastWillMessage = JSON.stringify({
       user: connectUsername,
       clientId: clientId,
       action: "disconnected_unexpectedly",
       fileId: currentFileId || null,
       timestamp: new Date().toISOString(),
-      message: `User ${connectUsername} disconnected unexpectedly`
+      message: `User ${connectUsername} disconnected unexpectedly`,
+      connectionType: connectionType
     });
 
     const connectOptions = {
@@ -117,15 +137,20 @@ function connectAndSetupClient() {
       username: connectUsername,
       password: connectPassword,
       clean: true,
+      // TLS/SSL options untuk secure connection
+      ...(useSecureConnection && {
+        rejectUnauthorized: false, // Untuk development dengan self-signed cert
+        // Untuk production, set ke true dan provide proper certificates
+      }),
       // Last Will and Testament Configuration
       will: {
         topic: currentFileId ? `file/${currentFileId}/status` : `user/${connectUsername}/status`,
         payload: lastWillMessage,
-        qos: 1, // QoS 1 untuk memastikan Last Will terkirim
-        retain: false, // Tidak retain Last Will message
+        qos: 1,
+        retain: false,
         properties: {
-          willDelayInterval: 5, // Delay 5 detik sebelum publish Last Will
-          messageExpiryInterval: 300 // Last Will message expire dalam 5 menit
+          willDelayInterval: 5,
+          messageExpiryInterval: 300
         }
       }
     };
@@ -135,11 +160,12 @@ function connectAndSetupClient() {
         client = null;
     }
 
-    client = mqtt.connect(brokerUrl, connectOptions);
+    client = mqtt.connect(currentBrokerUrl, connectOptions);
 
     client.once("connect", () => {
-      editorStatus.textContent = "Status: Connected to broker with Last Will configured";
-      console.log("MQTT Connected as", connectUsername, "with Last Will Testament");
+      const secureText = useSecureConnection ? ' (SSL/TLS Encrypted)' : '';
+      editorStatus.textContent = `Status: Connected to ${connectionType} broker with Last Will configured`;
+      console.log(`🔒 MQTT Connected as ${connectUsername} with Last Will Testament using ${connectionType}${secureText}`);
       userCredentials.username = connectUsername;
       userCredentials.password = connectPassword;
       isLoggedIn = true;
@@ -150,7 +176,7 @@ function connectAndSetupClient() {
 
     client.once("error", (err) => {
       editorStatus.textContent = `Status: MQTT error - ${err.message}. Check console.`;
-      console.error("MQTT Connection Error:", err);
+      console.error(`MQTT Connection Error (${connectionType}):`, err);
       joinMessage.textContent = `Connection failed: ${err.message}. Check credentials or broker.`;
       if (!isLoggedIn) {
         userCredentials.username = "";
@@ -637,7 +663,7 @@ function publishDocumentUpdate(fileId, content) {
   );
 }
 
-// Update function untuk status messages dengan expiry
+// Update function: messages expiry
 function publishStatusMessage(topic, statusData, qos = 1) {
   const message = typeof statusData === 'string' ? statusData : JSON.stringify(statusData);
   return publishWithExpiry(
@@ -647,3 +673,311 @@ function publishStatusMessage(topic, statusData, qos = 1) {
     MESSAGE_EXPIRY_SETTINGS.STATUS_MESSAGE
   );
 }
+
+// Update toggle function untuk simulate SSL
+function toggleSecureConnection() {
+  useSecureConnection = !useSecureConnection;
+  
+  // Untuk demo purposes - tetap pakai port standard tapi simulate secure
+  const connectionType = useSecureConnection ? 'Secure (SSL Simulation)' : 'Standard';
+  const currentUrl = brokerUrl; // Tetap pakai port 9002
+  
+  editorStatus.textContent = `Status: Using ${connectionType} connection`;
+  console.log(`🔒 ${useSecureConnection ? 'ENABLED' : 'DISABLED'} SSL Security Mode`);
+  console.log(`Note: This is SSL simulation. Actual SSL requires Mosquitto with SSL support.`);
+  console.log(`Connection URL: ${currentUrl}`);
+  
+  // Visual indicator
+  updateSecurityIndicator();
+  
+  // Reconnect jika sudah connected
+  if (client && client.connected) {
+      console.log("Reconnecting with new security setting...");
+      client.end(true, () => {
+          connectAndSetupClient();
+      });
+  }
+}
+
+function updateSecurityIndicator() {
+  // Update UI untuk show security status
+  const statusElement = document.getElementById('security-status');
+  if (statusElement) {
+      statusElement.textContent = useSecureConnection ? '🔒 SECURE MODE' : '🔓 STANDARD MODE';
+      statusElement.style.color = useSecureConnection ? '#4CAF50' : '#666';
+      statusElement.style.fontWeight = 'bold';
+  }
+  
+  // Log security status ke console
+  if (useSecureConnection) {
+      console.log(`🔒 Security Features Enabled:
+      ✅ Connection Encryption (Simulated)
+      ✅ Data Integrity Check (Simulated) 
+      ✅ Certificate Validation (Simulated)
+      ✅ Secure WebSocket Protocol (Simulated)`);
+  } else {
+      console.log(`🔓 Standard Mode: No encryption`);
+  }
+}
+
+function publishWithFlowControl(topic, message, options = {}) {
+  return new Promise((resolve, reject) => {
+    // Check queue size limit
+    if (messageQueue.length >= FLOW_CONTROL_SETTINGS.MAX_QUEUE_SIZE) {
+      console.warn(`🚫 Flow Control: Queue full (${messageQueue.length}/${FLOW_CONTROL_SETTINGS.MAX_QUEUE_SIZE}), dropping message`);
+      reject(new Error("Message queue full - flow control activated"));
+      return;
+    }
+    
+    // Add to queue
+    messageQueue.push({ 
+      topic, 
+      message, 
+      options, 
+      resolve, 
+      reject,
+      timestamp: Date.now(),
+      id: Math.random().toString(16).slice(2, 8)
+    });
+    
+    console.log(`📬 Flow Control: Queued message for ${topic} (Queue: ${messageQueue.length}/${FLOW_CONTROL_SETTINGS.MAX_QUEUE_SIZE})`);
+    
+    // Check backpressure
+    if (messageQueue.length > FLOW_CONTROL_SETTINGS.BACKPRESSURE_THRESHOLD && !isBackpressureActive) {
+      activateBackpressure();
+    }
+    
+    // Process queue
+    processMessageQueue();
+  });
+}
+
+function processMessageQueue() {
+  // Check if we can publish more messages
+  if (activePublishes >= FLOW_CONTROL_SETTINGS.MAX_CONCURRENT_PUBLISHES || messageQueue.length === 0) {
+    return;
+  }
+  
+  // Rate limiting - ensure minimum delay between publishes
+  const now = Date.now();
+  const timeSinceLastPublish = now - lastPublishTime;
+  
+  if (timeSinceLastPublish < FLOW_CONTROL_SETTINGS.PUBLISH_RATE_LIMIT) {
+    // Schedule next attempt after rate limit delay
+    setTimeout(() => processMessageQueue(), FLOW_CONTROL_SETTINGS.PUBLISH_RATE_LIMIT - timeSinceLastPublish);
+    return;
+  }
+  
+  // Get next message from queue (FIFO)
+  const { topic, message, options, resolve, reject, timestamp, id } = messageQueue.shift();
+  
+  // Check message age (optional: drop old messages)
+  const messageAge = now - timestamp;
+  if (messageAge > 30000) { // Drop messages older than 30 seconds
+    console.warn(`⏰ Flow Control: Dropping old message (age: ${messageAge}ms)`);
+    reject(new Error("Message dropped - too old"));
+    processMessageQueue(); // Continue with next message
+    return;
+  }
+  
+  activePublishes++;
+  lastPublishTime = now;
+  publishRateCounter++;
+  
+  console.log(`🚀 Flow Control: Publishing message ${id} to ${topic} (Active: ${activePublishes}/${FLOW_CONTROL_SETTINGS.MAX_CONCURRENT_PUBLISHES}, Queue: ${messageQueue.length})`);
+  
+  client.publish(topic, message, options, (err) => {
+    activePublishes--;
+    
+    if (err) {
+      console.error(`❌ Flow Control: Publish failed for ${topic}:`, err);
+      reject(err);
+    } else {
+      console.log(`✅ Flow Control: Published to ${topic} (Remaining queue: ${messageQueue.length})`);
+      resolve();
+    }
+    
+    // Check if backpressure can be deactivated
+    if (isBackpressureActive && messageQueue.length <= FLOW_CONTROL_SETTINGS.BACKPRESSURE_THRESHOLD / 2) {
+      deactivateBackpressure();
+    }
+    
+    // Process next message in queue
+    setTimeout(() => processMessageQueue(), 10); // Small delay to prevent overwhelming
+  });
+}
+
+function activateBackpressure() {
+  isBackpressureActive = true;
+  console.warn(`🔴 Flow Control: BACKPRESSURE ACTIVATED (Queue: ${messageQueue.length})`);
+  
+  // Show visual indicator
+  showFlowControlNotification("⚠️ High message traffic - Flow control activated", "warning");
+  
+  // Update UI
+  const statusElement = document.getElementById('flow-control-status');
+  if (statusElement) {
+    statusElement.textContent = '🔴 BACKPRESSURE';
+    statusElement.style.color = 'red';
+  }
+}
+
+function deactivateBackpressure() {
+  isBackpressureActive = false;
+  console.log(`🟢 Flow Control: Backpressure deactivated (Queue: ${messageQueue.length})`);
+  
+  // Show visual indicator
+  showFlowControlNotification("✅ Message traffic normalized", "success");
+  
+  // Update UI
+  const statusElement = document.getElementById('flow-control-status');
+  if (statusElement) {
+    statusElement.textContent = '🟢 NORMAL';
+    statusElement.style.color = 'green';
+  }
+}
+
+// Function untuk show flow control notifications
+function showFlowControlNotification(message, className = "info") {
+  const notification = document.createElement('div');
+  notification.className = `flow-control-notification ${className}`;
+  notification.textContent = message;
+  notification.style.cssText = `
+    position: fixed;
+    top: 70px;
+    right: 20px;
+    padding: 8px 12px;
+    border-radius: 5px;
+    color: white;
+    font-size: 12px;
+    font-weight: bold;
+    z-index: 1001;
+    opacity: 0;
+    transition: opacity 0.3s ease;
+    max-width: 250px;
+  `;
+  
+  // Set colors
+  switch (className) {
+    case "warning":
+      notification.style.backgroundColor = "#ff9800";
+      break;
+    case "success":
+      notification.style.backgroundColor = "#4caf50";
+      break;
+    default:
+      notification.style.backgroundColor = "#2196f3";
+  }
+  
+  document.body.appendChild(notification);
+  
+  // Fade in
+  setTimeout(() => notification.style.opacity = "1", 100);
+  
+  // Fade out and remove
+  setTimeout(() => {
+    notification.style.opacity = "0";
+    setTimeout(() => {
+      if (notification.parentNode) {
+        notification.parentNode.removeChild(notification);
+      }
+    }, 300);
+  }, 3000);
+}
+
+// Update publish functions to use flow control
+function publishDocumentUpdate(fileId, content) {
+  return publishWithFlowControl(
+    `file/${fileId}/document/init`, 
+    content, 
+    {
+      qos: 2,
+      retain: true,
+      properties: {
+        messageExpiryInterval: MESSAGE_EXPIRY_SETTINGS.DOCUMENT_UPDATE
+      }
+    }
+  );
+}
+
+function publishStatusMessage(topic, statusData, qos = 1) {
+  const message = typeof statusData === 'string' ? statusData : JSON.stringify(statusData);
+  return publishWithFlowControl(
+    topic,
+    message,
+    { 
+      qos: qos,
+      properties: {
+        messageExpiryInterval: MESSAGE_EXPIRY_SETTINGS.STATUS_MESSAGE
+      }
+    }
+  );
+}
+
+// Flow control statistics function
+function getFlowControlStats() {
+  return {
+    queueLength: messageQueue.length,
+    activePublishes: activePublishes,
+    isBackpressureActive: isBackpressureActive,
+    publishRateCounter: publishRateCounter,
+    maxQueueSize: FLOW_CONTROL_SETTINGS.MAX_QUEUE_SIZE,
+    maxConcurrentPublishes: FLOW_CONTROL_SETTINGS.MAX_CONCURRENT_PUBLISHES
+  };
+}
+
+// Debug function untuk monitor flow control
+function logFlowControlStats() {
+  const stats = getFlowControlStats();
+  console.log(`📊 Flow Control Stats:`, stats);
+}
+
+// Monitor flow control setiap 5 detik (untuk debug)
+setInterval(logFlowControlStats, 5000);
+
+// Function untuk test flow control
+function testFlowControl() {
+  if (!client || !client.connected) {
+    alert("Please connect first!");
+    return;
+  }
+  
+  console.log("🧪 Testing Flow Control - Sending burst of messages...");
+  
+  // Send burst of 20 messages to test flow control
+  for (let i = 0; i < 20; i++) {
+    publishWithFlowControl(
+      `test/flow-control`,
+      `Test message ${i + 1}`,
+      { qos: 1 }
+    ).then(() => {
+      console.log(`✅ Test message ${i + 1} sent`);
+    }).catch(err => {
+      console.warn(`⚠️ Test message ${i + 1} failed:`, err.message);
+    });
+  }
+  
+  // Update UI stats every second during test
+  let testDuration = 10;
+  const testInterval = setInterval(() => {
+    updateFlowControlUI();
+    testDuration--;
+    if (testDuration <= 0) {
+      clearInterval(testInterval);
+    }
+  }, 1000);
+}
+
+// Function untuk update flow control UI
+function updateFlowControlUI() {
+  const stats = getFlowControlStats();
+  
+  const queueLengthEl = document.getElementById('queue-length');
+  const activePubEl = document.getElementById('active-publishes');
+  
+  if (queueLengthEl) queueLengthEl.textContent = stats.queueLength;
+  if (activePubEl) activePubEl.textContent = stats.activePublishes;
+}
+
+// Update UI setiap 2 detik
+setInterval(updateFlowControlUI, 2000);
