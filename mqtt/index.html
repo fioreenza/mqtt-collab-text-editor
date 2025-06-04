@@ -12,8 +12,19 @@
   <h1 class="text-4xl font-bold mb-6">Collaborative Document Editor</h1>
 
   <div id="user-section" class="w-full max-w-xl bg-white rounded shadow p-6">
-    <label class="block mb-2 font-semibold">Your Username:</label>
-    <input type="text" id="username" class="w-full border rounded p-2 mb-4" placeholder="Enter your username" />
+    <!-- Bagian untuk input kredensial -->
+    <div id="credentials-input-section">
+      <label class="block mb-2 font-semibold">Your Username:</label>
+      <input type="text" id="username" class="w-full border rounded p-2 mb-2" placeholder="Enter your username" />
+      <label class="block mb-2 font-semibold">Password:</label>
+      <input type="password" id="password" class="w-full border rounded p-2 mb-4" placeholder="Enter your password" />
+    </div>
+
+    <!-- Bagian untuk menampilkan info user yang sudah login -->
+    <div id="logged-in-info-section" class="hidden mb-4">
+      <p class="text-lg">Logged in as: <strong id="logged-in-username"></strong></p>
+      <button id="btn-logout" class="mt-2 text-sm text-blue-600 hover:text-blue-800">Logout (to change user)</button>
+    </div>
 
     <button id="btn-create" class="w-full bg-green-600 hover:bg-green-700 text-white py-2 rounded mb-4">Create New File</button>
 

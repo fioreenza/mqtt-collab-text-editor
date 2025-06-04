@@ -1,292 +1,441 @@
-const brokerUrl = "ws://localhost:9001"; // Mosquitto websocket port
+const brokerUrl = "ws://localhost:9002"; // Menggunakan WS non-secure untuk sekarang
 const clientId = "client_" + Math.random().toString(16).slice(2, 8);
 
 let client;
-let username = "";
+let userCredentials = { username: "", password: "" };
+let isLoggedIn = false;
 let currentFileId = null;
 let isOwner = false;
 let hasEditAccess = false;
 
-const pendingRequests = new Map(); // correlationId => resolve
+const pendingRequests = new Map();
 
+// ... (Referensi elemen DOM tetap sama) ...
 const userSection = document.getElementById("user-section");
 const editorSection = document.getElementById("editor-section");
 const editor = document.getElementById("editor");
 const fileIdLabel = document.getElementById("file-id-label");
 const editorStatus = document.getElementById("editor-status");
 const joinMessage = document.getElementById("join-message");
-
-// Modal elements
+const credentialsInputSection = document.getElementById("credentials-input-section");
+const loggedInInfoSection = document.getElementById("logged-in-info-section");
+const loggedInUsernameSpan = document.getElementById("logged-in-username");
+const btnLogout = document.getElementById("btn-logout");
+const usernameInput = document.getElementById("username");
+const passwordInput = document.getElementById("password");
 const modal = document.getElementById("modal");
 const modalTitle = document.getElementById("modal-title");
 const modalMessage = document.getElementById("modal-message");
-const btnApprove = document.getElementById("btn-approve");
-const btnDeny = document.getElementById("btn-deny");
+let btnApprove = document.getElementById("btn-approve");
+let btnDeny = document.getElementById("btn-deny");
 
-// Helper
+
 function genUUID() {
   return Math.random().toString(16).slice(2, 10);
 }
 
-let currentDocumentContent = ""; // simpan isi dokumen terakhir
+let currentDocumentContent = "";
 
-function connectMQTT() {
-  client = mqtt.connect(brokerUrl, {
-    clientId,
-    protocolVersion: 5,
-  });
+function updateLoginUI() {
+  if (isLoggedIn && userCredentials.username) {
+    credentialsInputSection.classList.add("hidden");
+    loggedInUsernameSpan.textContent = userCredentials.username;
+    loggedInInfoSection.classList.remove("hidden");
+  } else {
+    credentialsInputSection.classList.remove("hidden");
+    loggedInInfoSection.classList.add("hidden");
+    usernameInput.value = "";
+    passwordInput.value = "";
+    userCredentials.username = "";
+    userCredentials.password = "";
+  }
+}
 
-  client.on("connect", () => {
-    editorStatus.textContent = "Status: Connected to broker";
-    console.log("MQTT Connected");
-  });
+btnLogout.onclick = () => {
+  if (client && client.connected) {
+    if (currentFileId) {
+      document.getElementById("btn-leave").click();
+    }
+    client.end(true, () => {
+      console.log("Logged out and disconnected from MQTT.");
+      client = null;
+      isLoggedIn = false;
+      updateLoginUI();
+      editorStatus.textContent = "Status: Logged out. Ready to connect.";
+    });
+  } else {
+    isLoggedIn = false;
+    updateLoginUI();
+    editorStatus.textContent = "Status: Logged out. Ready to connect.";
+  }
+};
 
-  client.on("error", (err) => {
-    editorStatus.textContent = "Status: MQTT error";
-    console.error(err);
-  });
+function connectAndSetupClient() {
+  return new Promise((resolve, reject) => {
+    if (client && client.connected && isLoggedIn) {
+      console.log("Already connected with stored credentials.");
+      resolve();
+      return;
+    }
 
-  client.on("message", (topic, message, packet) => {
-    const msg = message.toString();
-
-    if (!currentFileId) return;
-
-    // Owner receives edit access requests
-    if (isOwner && topic === `file/${currentFileId}/edit/request`) {
-      const reqData = JSON.parse(msg);
-      const requester = reqData.username;
-      const responseTopic = packet.properties?.responseTopic;
-      const correlationData = packet.properties?.correlationData;
-
-      if (!responseTopic || !correlationData) {
-        console.warn("Missing MQTT 5 properties in request");
+    let connectUsername, connectPassword;
+    if (!isLoggedIn) {
+      connectUsername = usernameInput.value.trim();
+      connectPassword = passwordInput.value.trim();
+      if (!connectUsername || !connectPassword) {
+        alert("Username and Password are required for initial login.");
+        reject(new Error("Username and Password are required."));
         return;
       }
-
-      showModal(requester, (approved) => {
-        client.publish(
-          responseTopic,
-          approved ? "granted" : "denied",
-          {
-            qos: 1,
-            properties: { correlationData },
-          }
-        );
-
-        if (approved) {
-          // Kirim isi dokumen terakhir ke user yang baru dapat akses
-          client.publish(`file/${currentFileId}/document/init`, currentDocumentContent, { qos: 1 });
-        }
-      });
+    } else {
+      connectUsername = userCredentials.username;
+      connectPassword = userCredentials.password;
     }
 
-    // User receives response to their edit access request
-    if (!isOwner && topic === `file/${currentFileId}/edit/response`) {
-      const correlationData = packet.properties?.correlationData;
-      if (!correlationData) return;
-      const corrStr = new TextDecoder().decode(correlationData);
+    editorStatus.textContent = "Status: Connecting to broker...";
+    console.log(`Attempting to connect to ${brokerUrl} as ${connectUsername}`);
 
-      if (pendingRequests.has(corrStr)) {
-        const resolve = pendingRequests.get(corrStr);
-        resolve(msg);
-        pendingRequests.delete(corrStr);
+    const connectOptions = {
+      clientId,
+      protocolVersion: 5,
+      username: connectUsername,
+      password: connectPassword,
+      clean: true,
+      // rejectUnauthorized: false, // Dikomentari karena pakai ws://
+    };
+
+    if (client) {
+        client.end(true);
+        client = null;
+    }
+
+    client = mqtt.connect(brokerUrl, connectOptions);
+
+    client.once("connect", () => {
+      editorStatus.textContent = "Status: Connected to broker";
+      console.log("MQTT Connected as", connectUsername);
+      userCredentials.username = connectUsername;
+      userCredentials.password = connectPassword;
+      isLoggedIn = true;
+      updateLoginUI();
+      setupClientEventListeners();
+      resolve();
+    });
+
+    client.once("error", (err) => {
+      editorStatus.textContent = `Status: MQTT error - ${err.message}. Check console.`;
+      console.error("MQTT Connection Error:", err);
+      joinMessage.textContent = `Connection failed: ${err.message}. Check credentials or broker.`;
+      if (!isLoggedIn) {
+        userCredentials.username = "";
+        userCredentials.password = "";
       }
-    }
-
-    // Document update for all with access
-    if (topic === `file/${currentFileId}/document/update`) {
-      if (!hasEditAccess) return;
-      if (editor.value !== msg) {
-        editor.value = msg;
-        currentDocumentContent = msg; // update isi dokumen
-      }
-    }
-
-    // Terima isi dokumen awal saat join (user baru yang di-approve)
-    if (topic === `file/${currentFileId}/document/init`) {
-      editor.value = msg;
-      currentDocumentContent = msg;
-    }
+      if (client) client.end(true);
+      client = null;
+      reject(err);
+    });
   });
 }
 
-// Show modal and get approval decision
+function setupClientEventListeners() {
+    if (!client) return;
+
+    client.removeAllListeners('message');
+    client.removeAllListeners('reconnect');
+    client.removeAllListeners('close');
+
+    client.on("message", (topic, message, packet) => {
+        const msg = message.toString();
+        // QoS pesan yang diterima akan sesuai dengan QoS saat dipublikasikan (atau maksimum yang di-support broker/klien)
+        console.log(`Message on ${topic} (QoS ${packet.qos}): ${msg.length > 50 ? msg.substring(0,50)+'...' : msg}`);
+
+
+        if (!currentFileId) return;
+
+        if (isOwner && topic === `file/${currentFileId}/edit/request`) {
+            const reqData = JSON.parse(msg);
+            const requester = reqData.username;
+            const responseTopic = packet.properties?.responseTopic;
+            const correlationData = packet.properties?.correlationData;
+
+            if (!responseTopic || !correlationData) {
+                console.warn("Missing MQTT 5 properties in request");
+                return;
+            }
+
+            showModal(requester, (approved) => {
+                client.publish(
+                    responseTopic,
+                    approved ? "granted" : "denied",
+                    { qos: 1, properties: { correlationData } } // QoS 1 untuk respons
+                );
+            });
+        } else if (topic.startsWith(`client/${clientId}/file/${currentFileId}/edit/response`)) {
+            const correlationData = packet.properties?.correlationData;
+            if (!correlationData) return;
+            const corrStr = new TextDecoder().decode(correlationData);
+
+            if (pendingRequests.has(corrStr)) {
+                const { resolve } = pendingRequests.get(corrStr);
+                resolve(msg);
+                pendingRequests.delete(corrStr);
+            }
+        } else if (topic === `file/${currentFileId}/document/init`) {
+            if (editor.value !== msg) {
+                editor.value = msg;
+                currentDocumentContent = msg;
+                console.log("Initial/Updated document content set from init topic:", msg.substring(0,50)+'...');
+            }
+        }
+    });
+
+    client.on("reconnect", () => {
+        editorStatus.textContent = "Status: Reconnecting...";
+        console.log("MQTT Reconnecting");
+    });
+
+    client.on("close", () => {
+        editorStatus.textContent = "Status: Connection closed.";
+        console.log("MQTT Connection Closed");
+    });
+}
+
+
 function showModal(requester, callback) {
   modalTitle.textContent = "Edit Access Request";
   modalMessage.textContent = `User "${requester}" is requesting edit access. Approve?`;
   modal.classList.remove("hidden");
 
-  function cleanup() {
-    modal.classList.add("hidden");
-    btnApprove.removeEventListener("click", onApprove);
-    btnDeny.removeEventListener("click", onDeny);
-  }
+  const newBtnApprove = btnApprove.cloneNode(true);
+  btnApprove.parentNode.replaceChild(newBtnApprove, btnApprove);
+  btnApprove = newBtnApprove;
+  const newBtnDeny = btnDeny.cloneNode(true);
+  btnDeny.parentNode.replaceChild(newBtnDeny, btnDeny);
+  btnDeny = newBtnDeny;
 
-  function onApprove() {
-    cleanup();
-    callback(true);
-  }
-
-  function onDeny() {
-    cleanup();
-    callback(false);
-  }
-
-  btnApprove.addEventListener("click", onApprove);
-  btnDeny.addEventListener("click", onDeny);
+  function cleanup() { modal.classList.add("hidden"); }
+  btnApprove.addEventListener("click", () => { cleanup(); callback(true); }, { once: true });
+  btnDeny.addEventListener("click", () => { cleanup(); callback(false); }, { once: true });
 }
 
-// UI event handlers
+document.getElementById("btn-create").onclick = async () => {
+  try {
+    await connectAndSetupClient();
+  } catch (error) { return; }
 
-document.getElementById("btn-create").onclick = () => {
-  username = document.getElementById("username").value.trim();
-  if (!username) {
-    alert("Please enter your username");
-    return;
-  }
   currentFileId = genUUID();
   isOwner = true;
   hasEditAccess = true;
 
-  subscribeTopics(currentFileId);
-
   userSection.classList.add("hidden");
   editorSection.classList.remove("hidden");
-
+  joinMessage.textContent = "";
   fileIdLabel.textContent = `File ID: ${currentFileId}`;
-
   editor.value = "";
   currentDocumentContent = "";
-  editorStatus.textContent = "Status: You are the owner and have edit access";
+  editorStatus.textContent = `Status: You are owner. File ID: ${currentFileId}`;
+
+  subscribeAllTopics(currentFileId);
+
+  // Publikasikan pesan inisialisasi dokumen dengan QoS 2 dan RETAIN
+  client.publish(`file/${currentFileId}/document/init`, currentDocumentContent, {
+    qos: 2, // <<<< QoS 2 untuk dokumen
+    retain: true,
+  }, (err) => {
+    if(err) console.error("Publish retain init (QoS 2) error:", err);
+    else console.log(`Published initial document to file/${currentFileId}/document/init with QoS 2, retain=true.`);
+  });
 
   editor.oninput = () => {
-    if (!hasEditAccess) return;
-    currentDocumentContent = editor.value; // update konten terakhir
-    client.publish(`file/${currentFileId}/document/update`, currentDocumentContent, { qos: 1 });
+    if (!hasEditAccess || !client || !client.connected) return;
+    currentDocumentContent = editor.value;
+    // Perubahan dokumen juga dengan QoS 2
+    client.publish(`file/${currentFileId}/document/init`, currentDocumentContent, {
+        qos: 2, // <<<< QoS 2 untuk update dokumen
+        retain: true
+    }, (err) => {
+        if(err) console.error(`Publish document update (QoS 2) for ${currentFileId} error:`, err);
+        // else console.log(`Published document update (QoS 2) for ${currentFileId}`); // Bisa terlalu verbose
+    });
   };
 };
 
 document.getElementById("btn-join").onclick = async () => {
-  username = document.getElementById("username").value.trim();
-  if (!username) {
-    alert("Please enter your username");
-    return;
-  }
   const joinFileId = document.getElementById("join-file-id").value.trim();
   if (!joinFileId) {
     alert("Please enter File ID to join");
     return;
   }
 
+  try {
+    await connectAndSetupClient();
+  } catch (error) { return; }
+
   currentFileId = joinFileId;
   isOwner = false;
   hasEditAccess = false;
-
-  subscribeTopics(currentFileId);
-
   joinMessage.textContent = "Requesting edit access...";
+  editorStatus.textContent = "Status: Attempting to join file...";
+
+  subscribeAllTopics(currentFileId);
 
   try {
-    const allowed = await requestEditAccess(currentFileId, username);
+    const allowed = await requestEditAccess(currentFileId, userCredentials.username);
     if (allowed === "granted") {
       hasEditAccess = true;
       joinMessage.textContent = "";
       userSection.classList.add("hidden");
       editorSection.classList.remove("hidden");
-
       fileIdLabel.textContent = `File ID: ${currentFileId}`;
-      editorStatus.textContent = "Status: Edit access granted";
-
-      // Editor sudah diisi otomatis dari topic document/init saat approve
+      editorStatus.textContent = "Status: Edit access granted. Document should load.";
 
       editor.oninput = () => {
-        if (!hasEditAccess) return;
-        currentDocumentContent = editor.value; // update konten terakhir
-        client.publish(`file/${currentFileId}/document/update`, currentDocumentContent, { qos: 1 });
+        if (!hasEditAccess || !client || !client.connected) return;
+        currentDocumentContent = editor.value;
+        // Update dokumen oleh pengguna yang join juga QoS 2
+        client.publish(`file/${currentFileId}/document/init`, currentDocumentContent, {
+            qos: 2, // <<<< QoS 2 untuk update dokumen
+            retain: true
+        }, (err) => {
+            if(err) console.error(`Publish document update (QoS 2) for ${currentFileId} error:`, err);
+        });
       };
+    } else if (allowed === "timeout") {
+      joinMessage.textContent = "Edit access request timed out.";
+      editorStatus.textContent = "Status: Join failed (timeout).";
+      cleanupAfterFailedJoin();
     } else {
-      joinMessage.textContent = "Edit access denied or no response.";
+      joinMessage.textContent = "Edit access denied or file not found.";
+      editorStatus.textContent = "Status: Join failed (denied/not found).";
+      cleanupAfterFailedJoin();
     }
   } catch (e) {
-    joinMessage.textContent = "Error requesting edit access.";
+    joinMessage.textContent = `Error requesting access: ${e.message}`;
+    editorStatus.textContent = "Status: Join failed (error).";
+    console.error("Error requesting edit access:", e);
+    cleanupAfterFailedJoin();
   }
 };
 
+function cleanupAfterFailedJoin() {
+    if (client && currentFileId) {
+        unsubscribeAllTopics(currentFileId);
+    }
+    currentFileId = null;
+}
+
 document.getElementById("btn-leave").onclick = () => {
-  unsubscribeTopics(currentFileId);
+  if (client && client.connected && currentFileId) {
+    unsubscribeAllTopics(currentFileId);
+    // Contoh pesan 'user left' dengan QoS 0 (fire and forget)
+    // Ini opsional dan hanya contoh penggunaan QoS 0
+    const leaveMessage = JSON.stringify({ user: userCredentials.username, action: "left" });
+    client.publish(`file/${currentFileId}/status`, leaveMessage, { qos: 0 }, (err) => {
+        if(err) console.warn("Publish leave status (QoS 0) error:", err);
+        else console.log(`Published leave status (QoS 0) for ${currentFileId}`);
+    });
+  }
 
   currentFileId = null;
   isOwner = false;
   hasEditAccess = false;
-
   editor.value = "";
   currentDocumentContent = "";
   userSection.classList.remove("hidden");
   editorSection.classList.add("hidden");
   joinMessage.textContent = "";
+  editorStatus.textContent = "Status: Left file. Ready.";
 };
 
-function subscribeTopics(fileId) {
-  if (!client.connected) {
-    client.on("connect", () => {
-      client.subscribe(`file/${fileId}/edit/request`);
-      client.subscribe(`file/${fileId}/edit/response`);
-      client.subscribe(`file/${fileId}/document/update`);
-      client.subscribe(`file/${fileId}/document/init`);
-    });
-  } else {
-    client.subscribe(`file/${fileId}/edit/request`);
-    client.subscribe(`file/${fileId}/edit/response`);
-    client.subscribe(`file/${fileId}/document/update`);
-    client.subscribe(`file/${fileId}/document/init`);
+function subscribeAllTopics(fileId) {
+  if (!client || !client.connected) {
+    console.warn("Cannot subscribe, MQTT client not connected.");
+    return;
   }
-}
+  // Saat subscribe, QoS yang ditentukan adalah QoS maksimum yang ingin diterima klien.
+  // Broker akan mengirim pesan dengan QoS terendah antara QoS publish dan QoS subscribe.
+  const topics = {
+    [`file/${fileId}/edit/request`]: { qos: 1 }, // Klien (pemilik) ingin menerima permintaan dengan QoS 1
+    [`client/${clientId}/file/${fileId}/edit/response`]: { qos: 1 }, // Klien (pemohon) ingin menerima respons dengan QoS 1
+    [`file/${fileId}/document/init`]: { qos: 2 }, // Klien ingin menerima update dokumen dengan QoS 2
+    [`file/${fileId}/status`]: { qos: 0 } // (Contoh) Klien ingin menerima status dengan QoS 0
+  };
 
-function unsubscribeTopics(fileId) {
-  client.unsubscribe(`file/${fileId}/edit/request`);
-  client.unsubscribe(`file/${fileId}/edit/response`);
-  client.unsubscribe(`file/${fileId}/document/update`);
-  client.unsubscribe(`file/${fileId}/document/init`);
-}
-
-// Request edit access via MQTT 5 request-response
-function requestEditAccess(fileId, username) {
-  return new Promise((resolve, reject) => {
-    const correlationId = genUUID();
-    const requestTopic = `file/${fileId}/edit/request`;
-    const responseTopic = `file/${fileId}/edit/response`;
-
-    // Subscribe to response topic for this request
-    client.subscribe(responseTopic);
-
-    // Save resolve to map to handle async response
-    pendingRequests.set(correlationId, (message) => {
-      resolve(message);
-      client.unsubscribe(responseTopic);
-    });
-
-    // Publish request with responseTopic and correlationData (correlationId)
-    client.publish(
-      requestTopic,
-      JSON.stringify({ username }),
-      {
-        qos: 1,
-        properties: {
-          responseTopic,
-          correlationData: new TextEncoder().encode(correlationId),
-        },
-      }
-    );
-
-    // Timeout fallback after 10 seconds
-    setTimeout(() => {
-      if (pendingRequests.has(correlationId)) {
-        pendingRequests.delete(correlationId);
-        client.unsubscribe(responseTopic);
-        resolve("timeout");
-      }
-    }, 10000);
+  client.subscribe(topics, (err, granted) => {
+    if (err) {
+      console.error("Subscription error:", err);
+      editorStatus.textContent = "Status: Subscription error.";
+      return;
+    }
+    // Granted adalah array objek yang menunjukkan QoS yang sebenarnya diberikan oleh broker untuk setiap topik
+    granted.forEach(g => console.log(`Subscribed to ${g.topic} with QoS ${g.qos}`));
   });
 }
 
-connectMQTT();
+function unsubscribeAllTopics(fileId) {
+  if (!client || !client.connected) {
+    console.warn("Cannot unsubscribe, MQTT client not connected.");
+    return;
+  }
+  const topicsToUnsubscribe = [
+    `file/${fileId}/edit/request`,
+    `client/${clientId}/file/${fileId}/edit/response`,
+    `file/${fileId}/document/init`,
+    `file/${fileId}/status` // (Contoh)
+  ];
+  client.unsubscribe(topicsToUnsubscribe, (err) => {
+    if (err) console.error("Unsubscription error:", err);
+    else console.log("Unsubscribed from topics for fileId:", fileId);
+  });
+}
+
+function requestEditAccess(fileId, requestingUsername) {
+  return new Promise((resolve, reject) => {
+    if (!client || !client.connected) {
+      reject(new Error("MQTT client not connected."));
+      return;
+    }
+
+    const correlationId = genUUID();
+    const requestTopic = `file/${fileId}/edit/request`;
+    const responseTopicForThisClient = `client/${clientId}/file/${fileId}/edit/response`;
+
+    const timeoutId = setTimeout(() => {
+      if (pendingRequests.has(correlationId)) {
+        const { reject: promiseReject } = pendingRequests.get(correlationId);
+        pendingRequests.delete(correlationId);
+        promiseReject(new Error("timeout"));
+      }
+    }, 15000);
+
+    pendingRequests.set(correlationId, { resolve, reject, timeoutId });
+
+    // Permintaan akses edit dengan QoS 1
+    client.publish(
+      requestTopic,
+      JSON.stringify({ username: requestingUsername }),
+      {
+        qos: 1, // <<<< QoS 1 untuk permintaan akses
+        properties: {
+          responseTopic: responseTopicForThisClient,
+          correlationData: new TextEncoder().encode(correlationId),
+        },
+      },
+      (err) => {
+          if (err) {
+              clearTimeout(timeoutId);
+              pendingRequests.delete(correlationId);
+              console.error("Failed to publish edit request (QoS 1):", err);
+              reject(new Error(`Publish request failed: ${err.message}`));
+          } else {
+              console.log("Edit access request (QoS 1) published.");
+          }
+      }
+    );
+  });
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    updateLoginUI();
+    editorStatus.textContent = "Status: Ready. Enter credentials and Create/Join.";
+});
