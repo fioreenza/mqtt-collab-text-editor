@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full bg-gray-50">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MQTT Collaborative Document Editor</title>
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  <script defer src="./app.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="h-full flex flex-col items-center p-6">
+  <h1 class="text-4xl font-bold mb-6">Collaborative Document Editor</h1>
+
+  <div id="user-section" class="w-full max-w-xl bg-white rounded shadow p-6">
+    <label class="block mb-2 font-semibold">Your Username:</label>
+    <input type="text" id="username" class="w-full border rounded p-2 mb-4" placeholder="Enter your username" />
+
+    <button id="btn-create" class="w-full bg-green-600 hover:bg-green-700 text-white py-2 rounded mb-4">Create New File</button>
+
+    <hr class="my-4" />
+
+    <label class="block mb-2 font-semibold">Join Existing File (File ID):</label>
+    <input type="text" id="join-file-id" class="w-full border rounded p-2 mb-2" placeholder="File ID to join" />
+    <button id="btn-join" class="w-full bg-blue-600 hover:bg-blue-700 text-white py-2 rounded">Request Edit Access</button>
+
+    <p id="join-message" class="mt-3 text-center text-red-600"></p>
+  </div>
+
+  <div id="editor-section" class="hidden w-full max-w-xl bg-white rounded shadow p-6 mt-8 flex flex-col">
+    <div class="flex justify-between items-center mb-3">
+      <h2 id="file-id-label" class="text-xl font-semibold"></h2>
+      <button id="btn-leave" class="bg-red-600 hover:bg-red-700 text-white py-1 px-3 rounded">Leave File</button>
+    </div>
+
+    <textarea id="editor" class="w-full h-64 border rounded p-3 resize-none" placeholder="Start typing here..."></textarea>
+
+    <p id="editor-status" class="mt-2 text-sm text-gray-500">Status: Connecting...</p>
+  </div>
+
+  <div id="modal" class="fixed inset-0 bg-black bg-opacity-50 flex justify-center items-center hidden">
+    <div class="bg-white rounded shadow-lg p-6 w-96">
+      <h3 class="text-lg font-semibold mb-4" id="modal-title">Edit Access Request</h3>
+      <p id="modal-message" class="mb-6"></p>
+      <div class="flex justify-end gap-4">
+        <button id="btn-deny" class="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded">Deny</button>
+        <button id="btn-approve" class="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded">Approve</button>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

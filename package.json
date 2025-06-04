@@ -1,0 +1,19 @@
+{
+  "name": "mqtt-collab-editor",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "aedes": "^0.51.3",
+    "mqtt": "^5.13.1",
+    "uuid": "^11.1.0",
+    "websocket-stream": "^5.5.2",
+    "ws": "^8.18.2"
+  }
+}
