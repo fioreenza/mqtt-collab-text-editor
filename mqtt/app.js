@@ -10,7 +10,6 @@ let hasEditAccess = false;
 
 const pendingRequests = new Map();
 
-// ... (Referensi elemen DOM tetap sama) ...
 const userSection = document.getElementById("user-section");
 const editorSection = document.getElementById("editor-section");
 const editor = document.getElementById("editor");
@@ -95,13 +94,33 @@ function connectAndSetupClient() {
     editorStatus.textContent = "Status: Connecting to broker...";
     console.log(`Attempting to connect to ${brokerUrl} as ${connectUsername}`);
 
+    // Last Will Message - akan dipublish otomatis jika client disconnect tidak normal
+    const lastWillMessage = JSON.stringify({
+      user: connectUsername,
+      clientId: clientId,
+      action: "disconnected_unexpectedly",
+      fileId: currentFileId || null,
+      timestamp: new Date().toISOString(),
+      message: `User ${connectUsername} disconnected unexpectedly`
+    });
+
     const connectOptions = {
       clientId,
       protocolVersion: 5,
       username: connectUsername,
       password: connectPassword,
       clean: true,
-      // rejectUnauthorized: false, // Dikomentari karena pakai ws://
+      // Last Will and Testament Configuration
+      will: {
+        topic: currentFileId ? `file/${currentFileId}/status` : `user/${connectUsername}/status`,
+        payload: lastWillMessage,
+        qos: 1, // QoS 1 untuk memastikan Last Will terkirim
+        retain: false, // Tidak retain Last Will message
+        properties: {
+          willDelayInterval: 5, // Delay 5 detik sebelum publish Last Will
+          messageExpiryInterval: 300 // Last Will message expire dalam 5 menit
+        }
+      }
     };
 
     if (client) {
@@ -112,8 +131,8 @@ function connectAndSetupClient() {
     client = mqtt.connect(brokerUrl, connectOptions);
 
     client.once("connect", () => {
-      editorStatus.textContent = "Status: Connected to broker";
-      console.log("MQTT Connected as", connectUsername);
+      editorStatus.textContent = "Status: Connected to broker with Last Will configured";
+      console.log("MQTT Connected as", connectUsername, "with Last Will Testament");
       userCredentials.username = connectUsername;
       userCredentials.password = connectPassword;
       isLoggedIn = true;
@@ -138,68 +157,159 @@ function connectAndSetupClient() {
 }
 
 function setupClientEventListeners() {
-    if (!client) return;
+  if (!client) return;
 
-    client.removeAllListeners('message');
-    client.removeAllListeners('reconnect');
-    client.removeAllListeners('close');
+  client.removeAllListeners('message');
+  client.removeAllListeners('reconnect');
+  client.removeAllListeners('close');
 
-    client.on("message", (topic, message, packet) => {
-        const msg = message.toString();
-        // QoS pesan yang diterima akan sesuai dengan QoS saat dipublikasikan (atau maksimum yang di-support broker/klien)
-        console.log(`Message on ${topic} (QoS ${packet.qos}): ${msg.length > 50 ? msg.substring(0,50)+'...' : msg}`);
+  client.on("message", (topic, message, packet) => {
+      const msg = message.toString();
+      console.log(`Message on ${topic} (QoS ${packet.qos}): ${msg.length > 50 ? msg.substring(0,50)+'...' : msg}`);
 
+      if (!currentFileId) return;
 
-        if (!currentFileId) return;
+      if (isOwner && topic === `file/${currentFileId}/edit/request`) {
+          const reqData = JSON.parse(msg);
+          const requester = reqData.username;
+          const responseTopic = packet.properties?.responseTopic;
+          const correlationData = packet.properties?.correlationData;
 
-        if (isOwner && topic === `file/${currentFileId}/edit/request`) {
-            const reqData = JSON.parse(msg);
-            const requester = reqData.username;
-            const responseTopic = packet.properties?.responseTopic;
-            const correlationData = packet.properties?.correlationData;
+          if (!responseTopic || !correlationData) {
+              console.warn("Missing MQTT 5 properties in request");
+              return;
+          }
 
-            if (!responseTopic || !correlationData) {
-                console.warn("Missing MQTT 5 properties in request");
-                return;
-            }
+          showModal(requester, (approved) => {
+              client.publish(
+                  responseTopic,
+                  approved ? "granted" : "denied",
+                  { qos: 1, properties: { correlationData } }
+              );
+          });
+      } else if (topic.startsWith(`client/${clientId}/file/${currentFileId}/edit/response`)) {
+          const correlationData = packet.properties?.correlationData;
+          if (!correlationData) return;
+          const corrStr = new TextDecoder().decode(correlationData);
 
-            showModal(requester, (approved) => {
-                client.publish(
-                    responseTopic,
-                    approved ? "granted" : "denied",
-                    { qos: 1, properties: { correlationData } } // QoS 1 untuk respons
-                );
-            });
-        } else if (topic.startsWith(`client/${clientId}/file/${currentFileId}/edit/response`)) {
-            const correlationData = packet.properties?.correlationData;
-            if (!correlationData) return;
-            const corrStr = new TextDecoder().decode(correlationData);
+          if (pendingRequests.has(corrStr)) {
+              const { resolve } = pendingRequests.get(corrStr);
+              resolve(msg);
+              pendingRequests.delete(corrStr);
+          }
+      } else if (topic === `file/${currentFileId}/document/init`) {
+          if (editor.value !== msg) {
+              editor.value = msg;
+              currentDocumentContent = msg;
+              console.log("Initial/Updated document content set from init topic:", msg.substring(0,50)+'...');
+          }
+      } 
+      // TAMBAHAN: Handle Last Will and status messages
+      else if (topic === `file/${currentFileId}/status` || topic.startsWith('user/')) {
+          try {
+              const statusData = JSON.parse(msg);
+              handleUserStatusMessage(statusData);
+          } catch (e) {
+              // Jika bukan JSON, treat sebagai simple status message
+              console.log(`Status message: ${msg}`);
+              showStatusNotification(msg);
+          }
+      }
+  });
 
-            if (pendingRequests.has(corrStr)) {
-                const { resolve } = pendingRequests.get(corrStr);
-                resolve(msg);
-                pendingRequests.delete(corrStr);
-            }
-        } else if (topic === `file/${currentFileId}/document/init`) {
-            if (editor.value !== msg) {
-                editor.value = msg;
-                currentDocumentContent = msg;
-                console.log("Initial/Updated document content set from init topic:", msg.substring(0,50)+'...');
-            }
-        }
-    });
+  client.on("reconnect", () => {
+      editorStatus.textContent = "Status: Reconnecting...";
+      console.log("MQTT Reconnecting");
+  });
 
-    client.on("reconnect", () => {
-        editorStatus.textContent = "Status: Reconnecting...";
-        console.log("MQTT Reconnecting");
-    });
-
-    client.on("close", () => {
-        editorStatus.textContent = "Status: Connection closed.";
-        console.log("MQTT Connection Closed");
-    });
+  client.on("close", () => {
+      editorStatus.textContent = "Status: Connection closed.";
+      console.log("MQTT Connection Closed");
+  });
 }
 
+// TAMBAHAN: Function untuk handle status messages (termasuk Last Will)
+function handleUserStatusMessage(statusData) {
+  const { user, action, timestamp, message, clientId: senderClientId } = statusData;
+  
+  // Jangan process message dari diri sendiri
+  if (senderClientId === clientId) return;
+  
+  console.log(`User Status Update:`, statusData);
+  
+  let notificationMessage = "";
+  let notificationClass = "";
+  
+  switch (action) {
+      case "disconnected_unexpectedly":
+          notificationMessage = `⚠️ ${user} disconnected unexpectedly`;
+          notificationClass = "warning";
+          break;
+      case "left":
+          notificationMessage = `👋 ${user} left the document`;
+          notificationClass = "info";
+          break;
+      case "joined":
+          notificationMessage = `👤 ${user} joined the document`;
+          notificationClass = "success";
+          break;
+      default:
+          notificationMessage = message || `${user}: ${action}`;
+          notificationClass = "info";
+  }
+  
+  showStatusNotification(notificationMessage, notificationClass);
+}
+
+// TAMBAHAN: Function untuk show notifications
+function showStatusNotification(message, className = "info") {
+  // Buat element notification
+  const notification = document.createElement('div');
+  notification.className = `notification ${className}`;
+  notification.textContent = message;
+  notification.style.cssText = `
+      position: fixed;
+      top: 20px;
+      right: 20px;
+      padding: 10px 15px;
+      border-radius: 5px;
+      color: white;
+      font-weight: bold;
+      z-index: 1000;
+      opacity: 0;
+      transition: opacity 0.3s ease;
+  `;
+  
+  // Set colors based on class
+  switch (className) {
+      case "warning":
+          notification.style.backgroundColor = "#ff9800";
+          break;
+      case "success":
+          notification.style.backgroundColor = "#4caf50";
+          break;
+      case "error":
+          notification.style.backgroundColor = "#f44336";
+          break;
+      default:
+          notification.style.backgroundColor = "#2196f3";
+  }
+  
+  document.body.appendChild(notification);
+  
+  // Fade in
+  setTimeout(() => notification.style.opacity = "1", 100);
+  
+  // Fade out and remove after 5 seconds
+  setTimeout(() => {
+      notification.style.opacity = "0";
+      setTimeout(() => {
+          if (notification.parentNode) {
+              notification.parentNode.removeChild(notification);
+          }
+      }, 300);
+  }, 5000);
+}
 
 function showModal(requester, callback) {
   modalTitle.textContent = "Edit Access Request";
@@ -352,13 +462,13 @@ function subscribeAllTopics(fileId) {
     console.warn("Cannot subscribe, MQTT client not connected.");
     return;
   }
-  // Saat subscribe, QoS yang ditentukan adalah QoS maksimum yang ingin diterima klien.
-  // Broker akan mengirim pesan dengan QoS terendah antara QoS publish dan QoS subscribe.
+  
   const topics = {
-    [`file/${fileId}/edit/request`]: { qos: 1 }, // Klien (pemilik) ingin menerima permintaan dengan QoS 1
-    [`client/${clientId}/file/${fileId}/edit/response`]: { qos: 1 }, // Klien (pemohon) ingin menerima respons dengan QoS 1
-    [`file/${fileId}/document/init`]: { qos: 2 }, // Klien ingin menerima update dokumen dengan QoS 2
-    [`file/${fileId}/status`]: { qos: 0 } // (Contoh) Klien ingin menerima status dengan QoS 0
+    [`file/${fileId}/edit/request`]: { qos: 1 },
+    [`client/${clientId}/file/${fileId}/edit/response`]: { qos: 1 },
+    [`file/${fileId}/document/init`]: { qos: 2 },
+    [`file/${fileId}/status`]: { qos: 1 }, // Subscribe ke status messages untuk Last Will
+    [`user/+/status`]: { qos: 1 } // Subscribe ke user status messages (wildcard)
   };
 
   client.subscribe(topics, (err, granted) => {
@@ -367,7 +477,6 @@ function subscribeAllTopics(fileId) {
       editorStatus.textContent = "Status: Subscription error.";
       return;
     }
-    // Granted adalah array objek yang menunjukkan QoS yang sebenarnya diberikan oleh broker untuk setiap topik
     granted.forEach(g => console.log(`Subscribed to ${g.topic} with QoS ${g.qos}`));
   });
 }
@@ -381,7 +490,8 @@ function unsubscribeAllTopics(fileId) {
     `file/${fileId}/edit/request`,
     `client/${clientId}/file/${fileId}/edit/response`,
     `file/${fileId}/document/init`,
-    `file/${fileId}/status` // (Contoh)
+    `file/${fileId}/status`,
+    `user/+/status`
   ];
   client.unsubscribe(topicsToUnsubscribe, (err) => {
     if (err) console.error("Unsubscription error:", err);
